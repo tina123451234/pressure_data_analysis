@@ -1,0 +1,151 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Load the data
+file_path = "/Users/tina/Desktop/pressure_data/raw_data/merged_absolute_time_RPT_0.xlsx"
+print("Loading data...")
+df = pd.read_excel(file_path)
+
+# Clean column names
+df.columns = df.columns.str.strip()
+
+print(f"Original data shape: {df.shape}")
+print(f"\nUnique Step Types:")
+print(df['Step Type'].value_counts())
+
+# Visualize current to identify the single charge-discharge cycle
+plt.figure(figsize=(14, 4))
+plt.plot(df.index, df['Current(A)'], linewidth=0.5)
+plt.axhline(y=0, color='r', linestyle='--', alpha=0.3)
+plt.xlabel('Row Index')
+plt.ylabel('Current (A)')
+plt.title('Current vs Row Index - Identify Single Charge-Discharge Cycle')
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('current_full_overview.png', dpi=150)
+plt.show()
+
+# Find all step transitions
+print("\n=== All Step Types in Order ===")
+step_changes = df['Step Type'].ne(df['Step Type'].shift())
+step_transitions = df[step_changes][['Step Type']].reset_index()
+print(step_transitions.head(20))
+
+# Strategy: Find the charge-discharge cycle AFTER the 10 oscillations
+# This should be Step 8 (CC Chg at 0.11A) followed by Step 10 (CC DChg at 0.11A)
+
+# Find all "CC Chg" steps (not CCCV)
+cc_chg_only = df[df['Step Type'].str.match('CC Chg', case=False, na=False)].index
+
+# Find all "CC DChg" steps (not CCCV)  
+cc_dchg_only = df[df['Step Type'].str.match('CC DChg', case=False, na=False)].index
+
+print(f"\n=== CC Chg (not CCCV) locations ===")
+for idx in cc_chg_only[:10]:
+    current_val = df.loc[idx, 'Current(A)']
+    print(f"Index {idx}: Current = {current_val}A")
+
+print(f"\n=== CC DChg (not CCCV) locations ===")
+for idx in cc_dchg_only[:10]:
+    current_val = df.loc[idx, 'Current(A)']
+    print(f"Index {idx}: Current = {current_val}A")
+
+# Look for the low-current charge-discharge pair (0.11A)
+# These should be Steps 8 and 10 from your protocol
+
+# Find CC Chg with low current (~0.11A)
+low_current_chg = df[(df['Step Type'].str.match('CC Chg', case=False, na=False)) & 
+                      (df['Current(A)'] > 0.05) & 
+                      (df['Current(A)'] < 0.2)].index
+
+# Find CC DChg with low current (~0.11A)
+low_current_dchg = df[(df['Step Type'].str.match('CC DChg', case=False, na=False)) & 
+                       (df['Current(A)'] < -0.05) & 
+                       (df['Current(A)'] > -0.2)].index
+
+if len(low_current_chg) > 0 and len(low_current_dchg) > 0:
+    # Find the first low-current charge after cycling
+    charge_start = low_current_chg[0]
+    
+    # Find the corresponding low-current discharge
+    discharge_candidates = low_current_dchg[low_current_dchg > charge_start]
+    
+    if len(discharge_candidates) > 0:
+        discharge_start = discharge_candidates[0]
+        
+        # Find where this discharge ends (next step change or end of data)
+        next_step_after_discharge = df[discharge_start:]['Step Type'].ne(df.loc[discharge_start, 'Step Type']).idxmax()
+        
+        if next_step_after_discharge > discharge_start:
+            cycle_end = next_step_after_discharge
+        else:
+            cycle_end = len(df)
+        
+        print(f"\n=== Found Single Charge-Discharge Cycle ===")
+        print(f"Charge starts at index: {charge_start}")
+        print(f"Discharge starts at index: {discharge_start}")
+        print(f"Cycle ends at index: {cycle_end}")
+        
+        # Extract the single cycle
+        single_cycle = df.iloc[charge_start:cycle_end].copy()
+        
+    else:
+        print("\nERROR: Could not find discharge after charge!")
+        exit()
+else:
+    print("\nERROR: Could not find low-current charge-discharge pair!")
+    print("Please manually specify indices from the plot.")
+    exit()
+
+print(f"\n=== Single Cycle Extracted ===")
+print(f"Total rows: {len(single_cycle)}")
+print(f"Time range: {single_cycle['Total Time'].iloc[0]} to {single_cycle['Total Time'].iloc[-1]}")
+
+# Display step type distribution
+print(f"\nStep Types in extracted cycle:")
+print(single_cycle['Step Type'].value_counts())
+
+# Display sample data
+print("\n=== First 5 rows ===")
+print(single_cycle[['Total Time', 'Current(A)', 'Voltage(V)', 'Step Type']].head())
+
+print("\n=== Last 5 rows ===")
+print(single_cycle[['Total Time', 'Current(A)', 'Voltage(V)', 'Step Type']].tail())
+
+# Plot the extracted cycle
+fig, axes = plt.subplots(3, 1, figsize=(14, 10))
+
+# Current
+axes[0].plot(single_cycle.index, single_cycle['Current(A)'], linewidth=1.5)
+axes[0].set_ylabel('Current (A)', fontsize=11)
+axes[0].set_title('Extracted Single Charge-Discharge Cycle', fontsize=13, fontweight='bold')
+axes[0].grid(True, alpha=0.3)
+axes[0].axhline(y=0, color='r', linestyle='--', alpha=0.3)
+
+# Voltage
+axes[1].plot(single_cycle.index, single_cycle['Voltage(V)'], linewidth=1.5, color='red')
+axes[1].set_ylabel('Voltage (V)', fontsize=11)
+axes[1].grid(True, alpha=0.3)
+
+# Pressure
+axes[2].plot(single_cycle.index, single_cycle['pressure_cDAQ1Mod4/ai2'], linewidth=1.5, color='green')
+axes[2].set_ylabel('Pressure', fontsize=11)
+axes[2].set_xlabel('Row Index', fontsize=11)
+axes[2].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('single_cycle_extracted.png', dpi=200)
+plt.show()
+
+# Save the trimmed data
+output_path = "/Users/tina/Desktop/pressure_data/NMC_RPT_data/NMC_RPT_0_single_cycle.xlsx"
+single_cycle.to_excel(output_path, index=False)
+print(f"\n=== Single cycle data saved ===")
+print(f"Saved to: {output_path}")
+
+# If automatic detection doesn't work, uncomment and manually specify:
+# manual_start = 30000  # Replace with charge start index from plot
+# manual_end = 50000    # Replace with discharge end index from plot  
+# single_cycle = df.iloc[manual_start:manual_end].copy()
+# single_cycle.to_excel(output_path, index=False)
+# print(f"Manual extraction: rows {manual_start} to {manual_end} saved")
